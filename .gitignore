@@ -4,3 +4,6 @@
 *.pt
 __pycache__
 venv
+*.joblib
+*.pt
+debug*
