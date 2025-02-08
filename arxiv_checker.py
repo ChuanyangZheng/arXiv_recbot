@@ -118,7 +118,9 @@ async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info(f"Received feedback: {feedback_type} for paper {entry_id} from user {update.effective_user.id}")
 
     await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text(f"Thank you for your feedback: {feedback_type}")
+    # await query.message.reply_text(f"Thank you for your feedback: {feedback_type}")
+    reply_message = f"Thank you for your feedback: {feedback_type}"
+    await context.bot.send_message(chat_id=update.effective_user.id, text=reply_message, reply_to_message_id=query.message.message_id)
 
 def main():
     parser = argparse.ArgumentParser()
