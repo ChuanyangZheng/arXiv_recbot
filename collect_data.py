@@ -21,7 +21,8 @@ api_hash = os.getenv('TG_API_HASH')
 session_name = "arxiv_retriever"
 
 # The target chat from which to retrieve messages
-target_chat = int(os.environ["TELEGRAM_BOT_CHAT_ID"])
+# target_chat = int(os.environ["TELEGRAM_BOT_CHAT_ID"])
+target_chat = os.environ["TELEGRAM_BOT_CHAT_NAME"]
 
 # Number of messages to retrieve
 limit = 100000  

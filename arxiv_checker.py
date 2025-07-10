@@ -95,6 +95,13 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
     # Select the top 10 papers
     papers_to_send = papers_to_send[:10]
 
+    try:
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text='-'*20)
+        cur_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=cur_time)
+    except Exception as e:
+        print(e)
+
     for overall_rating, message, entry_id in papers_to_send:
         # Provide 5 level of rating for the paper.
         # Provide emoji for each level of rating.
@@ -180,7 +187,7 @@ def main():
 
     if args.first_backcheck_day is not None:
         application.job_queue.run_once(run_once_fetch_func, when=timedelta(seconds=1))
-    application.job_queue.run_daily(run_daily_fetch_func, time(hour=15)) 
+    application.job_queue.run_daily(run_daily_fetch_func, time(hour=8)) 
 
     # Run the bot
     application.run_polling()
