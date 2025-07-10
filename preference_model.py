@@ -1,24 +1,22 @@
-import re
 import sqlite3
-from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
-from telethon.tl.functions.messages import GetHistoryRequest
-import asyncio
-import os
-
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, classification_report
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import accuracy_score, classification_report
+
 import joblib
-from arxiv_util import *
+
+from common import *
+
+# Logging with timestamps
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Define the model
 class PreferenceModel(nn.Module):
@@ -155,116 +153,23 @@ def train_model(data):
         print(classification_report(y_test, y_pred))
 
     # Save the models
-    torch.save(model.state_dict(), 'pytorch_preference_model.pt')
-    joblib.dump(vectorizer, 'tfidf_vectorizer.joblib')
+    torch.save(model.state_dict(), global_model_name)
+    joblib.dump(vectorizer, global_vectorizer_name)
 
-# Replace these with your own values
-api_id = os.getenv('TG_API_ID')
-api_hash = os.getenv('TG_API_HASH')
-
-# You can set a session name or use None for an ephemeral session
-session_name = "arxiv_retriever"
-
-# The target chat from which to retrieve messages
-# target_chat = int(os.environ["TELEGRAM_BOT_CHAT_ID"])
-target_chat = os.environ["TELEGRAM_BOT_CHAT_NAME"]
-
-# Number of messages to retrieve
-limit = 10000  
-
-async def main():
-    # Initialize the client
-    client = TelegramClient(session_name, api_id, api_hash)
-
-    await client.start()
-    print("Client Created")
-
-    # If you have 2FA enabled, you'll need to enter your password
-    if not await client.is_user_authorized():
-        phone = input("Enter your phone number (with country code): ")
-        await client.send_code_request(phone)
-        code = input("Enter the code you received: ")
-        try:
-            await client.sign_in(phone, code)
-        except SessionPasswordNeededError:
-            password = input("Two-Step Verification enabled. Please enter your password: ")
-            await client.sign_in(password=password)
-
-    # Get the target entity
-    try:
-        entity = await client.get_entity(target_chat)
-    except ValueError:
-        print(f"Could not find the chat: {target_chat}")
-        return
-
-    # Use regular expression to extract the label
-    matcher = re.compile(r"Thank you for your feedback: (\w+)")
-    label2class = { f"rating{i+1}" : i for i in range(6) }
-    label2class.update({
-        "not": 0,
-        "thumb": 4,
-        "love": 5,
-    })
-
-    # Load the message from the chat history and save it to a sqlite database
-    conn = sqlite3.connect('arxiv_preference.db')
+def main():
+    conn = sqlite3.connect(global_dataset_name)
     cursor = conn.cursor()
-    cursor.execute('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, message_id INTEGER, text TEXT, preference INTEGER)')
 
-    # Iterate over the chat history from the most recent message of the chat
-    async for message in client.iter_messages(entity, limit=limit, reverse=False):
-        # Check whether the message is a reply
-        entry = None
-        if message.reply_to_msg_id:
-            # Get parent message
-            parent_msg_id = message.reply_to_msg_id
-            # get the content of the parent message
-            parent_msg = await client.get_messages(target_chat, ids=parent_msg_id)
-
-            # Extract label 
-            # Example text: Thank you for your feedback: not
-            # Use regular expression to extract the label
-            m = matcher.search(message.text)
-            if m:
-                label = label2class.get(m.group(1), None)
-                if label is not None:
-                    # For parent_msg.txt, if the first line starts with "//", remove it
-                    if parent_msg.text.startswith("//"):
-                        parent_msg.text = "\n".join(parent_msg.text.split("\n")[1:])
-                    entry = {
-                        "message_id": message.id,
-                        "text": parent_msg.text,
-                        "preference": label
-                    }
-        elif message.sender.is_self and message.text is not None and message.text.startswith("https://arxiv.org"):
-            # Put the paper in with default preference 
-            results = get_arxiv_results(message.text.split("/")[-1], 1)
-            entry = {
-                "message_id": message.id,
-                "text": get_arxiv_message(results[0]).replace("**", ""),
-                "preference": 4
-            }
-
-        if entry is not None:
-            # If there is no such message, insert it
-            # otherwise we break the loop since all previous messages have been sent to the database
-            # Check whether the message is already in the database
-            cursor.execute('SELECT COUNT(*) FROM messages WHERE message_id = ?', (entry["message_id"],))
-            if cursor.fetchone()[0] == 0:
-                cursor.execute('INSERT INTO messages (message_id, text, preference) VALUES (?, ?, ?)', (entry["message_id"], entry["text"], entry["preference"]))
-                conn.commit()
-            else:
-                break
-
-    # Get all the messages from the database
-    cursor.execute('SELECT text, preference FROM messages')
+    logger.info("Generating the dataset")
+    # Then we join the infos and preferences
+    cursor.execute('SELECT infos.text, preferences.preference FROM infos JOIN preferences ON infos.paper_message_id = preferences.paper_message_id')
     data = cursor.fetchall()
 
+    conn.close()
+
     # Train the model
+    logger.info("Training the model")
     train_model(data)
 
-    await client.disconnect()
-
-if __name__ == '__main__':
-    # Ensure the event loop is properly handled
-    asyncio.run(main())
+if __name__ == "__main__":
+    main()

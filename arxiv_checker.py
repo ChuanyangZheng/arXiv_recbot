@@ -7,6 +7,7 @@ import random
 import argparse
 
 import torch
+import sqlite3
 
 # Define your keywords
 MAX_RESULTS = 100
@@ -16,22 +17,20 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN_NOTIF_BOT"]  # Set your Tele
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_BOT_CHAT_ID"]) # Replace with your chat ID
 
 import logging
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, UTC
 from arxiv_util import *
 from preference_model import PreferenceModel
+from common import *
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, ContextTypes, CallbackQueryHandler, CommandHandler
 
-model_name = 'pytorch_preference_model.pt'
-vectorizer_name = 'tfidf_vectorizer.joblib'
-
-if os.path.exists(model_name):
-    vectorizer = joblib.load(vectorizer_name)
+if os.path.exists(global_model_name):
+    vectorizer = joblib.load(global_vectorizer_name)
     loaded_model = PreferenceModel(vectorizer.get_feature_names_out().shape[0], 6)
-    loaded_model.load_state_dict(torch.load(model_name))
+    loaded_model.load_state_dict(torch.load(global_model_name))
     loaded_model.eval()
-    print(f"Loaded {model_name} and {vectorizer_name}")
+    print(f"Loaded {global_model_name} and {global_vectorizer_name}")
 else:
     loaded_model = None
 
@@ -43,10 +42,14 @@ logging.basicConfig(
 
 application = None  # Will hold the Telegram application instance
 
+# Open the database
+conn = sqlite3.connect(global_dataset_name)
+cursor = conn.cursor()
+
 async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAULT_TYPE):
     results = get_arxiv_results(keywords.replace(",", " OR "), MAX_RESULTS)
 
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     yesterday = now - timedelta(days=backdays)
 
     num_sent = 0
@@ -55,7 +58,8 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
 
     for result in results:
         submitted_date = result.updated
-        submitted_date = submitted_date.replace(tzinfo=None)
+        # Make the submitted date timezone-aware by assuming UTC
+        submitted_date = submitted_date.replace(tzinfo=UTC)
         if submitted_date >= yesterday:
             message = get_arxiv_message(result)
 
@@ -122,6 +126,42 @@ async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_message = f"Thank you for your feedback: {feedback_type}"
     await context.bot.send_message(chat_id=update.effective_user.id, text=reply_message, reply_to_message_id=query.message.message_id)
 
+async def retrieve_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.callback_query:
+        # Handle command case
+        if not context.args:
+            await update.message.reply_text("Please provide tags to search for. Usage: /get tag1 tag2 tag3")
+            return
+            
+        tags = context.args
+    else:
+        # Handle callback query case
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+        tags = data.split(' ')
+
+    for tag in tags:
+        # Retrieve the paper from the database that contains the tags
+        cursor.execute('SELECT paper_message_id FROM comments WHERE comment LIKE ?', ('%' + tag + '%',))
+        paper_message_ids = cursor.fetchall()
+
+        # Get all papers that contain the tags and return
+        papers = []
+
+        for paper_message_id in paper_message_ids:
+            # Retrieve the paper from the database
+            cursor.execute('SELECT text FROM infos WHERE paper_message_id = ?', paper_message_id)
+            for paper in cursor.fetchall():
+                # Convert the paper to a string
+                papers.append(str(paper[0]))
+
+        # Return the papers
+        if update.callback_query:
+            await query.message.reply_text(f"For tag {tag}, the papers are the following: \n\n{'\n\n'.join(papers)}", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"For tag {tag}, the papers are the following: \n\n{'\n\n'.join(papers)}", parse_mode="Markdown")
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--first_backcheck_day', type=int, default=None)
@@ -132,6 +172,8 @@ def main():
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CallbackQueryHandler(feedback_handler))
+    application.add_handler(CommandHandler("get", retrieve_handler))
+    application.add_handler(CallbackQueryHandler(retrieve_handler, pattern="^get"))
 
     run_once_fetch_func = lambda context: fetch_and_send_papers(args.keywords, args.first_backcheck_day, context)
     run_daily_fetch_func = lambda context: fetch_and_send_papers(args.keywords, 2, context)
