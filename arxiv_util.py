@@ -37,8 +37,11 @@ def get_arxiv_message(result):
         authors = ', '.join([author.name for author in getattr(result, 'authors', [])]) 
         title = getattr(result, 'title', 'No title available')
         entry_id = getattr(result, 'entry_id', 'No URL available')
+        upvote = getattr(result, 'upvotes', 'None')
         
         message = (
+            f"**Upvote:** {upvote}\n"
+            f"**Source:** arXiv\n"
             f"**Title:** {title}\n"
             f"**Authors:** {authors}\n"
             f"**Summary:** {summary}\n"

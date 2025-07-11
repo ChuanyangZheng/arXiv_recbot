@@ -1,7 +1,10 @@
 import os
+import re
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from easydict import EasyDict
+from itertools import zip_longest
 import joblib
 import random
 import argparse
@@ -19,6 +22,7 @@ TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_BOT_CHAT_ID"]) # Replace with your c
 import logging
 from datetime import datetime, timedelta, time, UTC
 from arxiv_util import *
+from hf_util import *
 from preference_model import PreferenceModel
 from common import *
 
@@ -46,23 +50,51 @@ application = None  # Will hold the Telegram application instance
 conn = sqlite3.connect(global_dataset_name)
 cursor = conn.cursor()
 
-async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAULT_TYPE):
+async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAULT_TYPE, get_hf:bool):
     results = get_arxiv_results(keywords.replace(",", " OR "), MAX_RESULTS)
-
+    if get_hf:
+        hf_results = get_hf_results(keywords.replace(",", " OR "), MAX_RESULTS)
+        # 去重
+        exist_dict = {}
+        for idx, result in enumerate(results):
+            cur_title_key = re.sub(r'[^a-zA-Z0-9]', '', result.title)
+            exist_dict[cur_title_key] = idx
+        new_hf_results = []
+        for idx, result in enumerate(hf_results):
+            cur_title_key = re.sub(r'[^a-zA-Z0-9]', '', result['title'])
+            if cur_title_key in exist_dict.keys():
+                exist_idx = exist_dict[cur_title_key]
+                results[exist_idx].upvotes = result['paper']['upvotes']
+            else:
+                new_hf_results.append(result)
+        # 交替合并两个list
+        merged_results = []
+        for x, y in zip_longest(results, new_hf_results):
+            if x is not None:
+                merged_results.append(x)
+            if y is not None:
+                merged_results.append(y)
+        results = merged_results
     now = datetime.now(UTC)
     yesterday = now - timedelta(days=backdays)
 
     num_sent = 0
 
     papers_to_send = []
-
-    for result in results:
-        submitted_date = result.updated
-        # Make the submitted date timezone-aware by assuming UTC
-        submitted_date = submitted_date.replace(tzinfo=UTC)
-        if submitted_date >= yesterday:
+    for idx, result in enumerate(results):
+        if type(result) is dict:  # hf result
+            result['entry_id'] = f"http://arxiv.org/abs/{result['paper']['id']}"
+            result = EasyDict(result)
+            iso_time = result['publishedAt']
+            submitted_date = datetime.fromisoformat(iso_time.replace('Z', '+00:00'))
+            message = get_hf_message(result)
+        else:
+            submitted_date = result.updated
+            # Make the submitted date timezone-aware by assuming UTC
+            submitted_date = submitted_date.replace(tzinfo=UTC)
             message = get_arxiv_message(result)
 
+        if submitted_date >= yesterday:
             if loaded_model:
                 # Predict the class of the paper
                 X = vectorizer.transform([message])
@@ -93,8 +125,8 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
     # Sort papers_to_send by overall_rating in descending order
     papers_to_send.sort(key=lambda x: x[0], reverse=True)
     # Select the top 10 papers
-    papers_to_send = papers_to_send[:10]
-
+    N = 10 if not get_hf else 20
+    papers_to_send = papers_to_send[:N]
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text='-'*20)
         cur_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -102,7 +134,7 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
     except Exception as e:
         print(e)
 
-    for overall_rating, message, entry_id in papers_to_send:
+    for mes_idx, (overall_rating, message, entry_id) in enumerate(papers_to_send):
         # Provide 5 level of rating for the paper.
         # Provide emoji for each level of rating.
         keys = ["👎", "2️⃣", "3️⃣", "4️⃣", "👍", "️❤️"]
@@ -112,7 +144,7 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
             ],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
+        message = message.split('**')[0] + f"**MessageIdx:** {mes_idx}\n" + "**".join(message.split('**')[1:])
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception as e:
@@ -173,21 +205,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--first_backcheck_day', type=int, default=None)
     parser.add_argument("--keywords", type=str, default="reasoning,planning,preference,optimization,symbolic,grokking")
+    parser.add_argument("--get_hf", action='store_false')
 
     args = parser.parse_args()
-
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CallbackQueryHandler(feedback_handler))
     application.add_handler(CommandHandler("get", retrieve_handler))
     application.add_handler(CallbackQueryHandler(retrieve_handler, pattern="^get"))
-
-    run_once_fetch_func = lambda context: fetch_and_send_papers(args.keywords, args.first_backcheck_day, context)
-    run_daily_fetch_func = lambda context: fetch_and_send_papers(args.keywords, 2, context)
+    run_once_fetch_func = lambda context: fetch_and_send_papers(args.keywords, args.first_backcheck_day, context, args.get_hf)
+    run_daily_fetch_func = lambda context: fetch_and_send_papers(args.keywords, 2, context, args.get_hf)
 
     if args.first_backcheck_day is not None:
         application.job_queue.run_once(run_once_fetch_func, when=timedelta(seconds=1))
-    application.job_queue.run_daily(run_daily_fetch_func, time(hour=8)) 
+    # application.job_queue.run_daily(run_daily_fetch_func, time(hour=0, minute=30)) 
 
     # Run the bot
     application.run_polling()
