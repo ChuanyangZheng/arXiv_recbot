@@ -5,7 +5,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from easydict import EasyDict
 from itertools import zip_longest
+from pathlib import Path
 import joblib
+import shutil
 import random
 import argparse
 
@@ -22,12 +24,19 @@ TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_BOT_CHAT_ID"]) # Replace with your c
 import logging
 from datetime import datetime, timedelta, time, UTC
 from arxiv_util import *
-from hf_util import *
+
+result = os.environ.get('GET_HF', None)
+GET_HF = False if result is None else True
+if GET_HF:
+    from hf_util import *
 from preference_model import PreferenceModel
 from common import *
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CallbackQueryHandler, CommandHandler
+from telegram.ext import ApplicationBuilder, ContextTypes, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 if os.path.exists(global_model_name):
     vectorizer = joblib.load(global_vectorizer_name)
@@ -38,21 +47,27 @@ if os.path.exists(global_model_name):
 else:
     loaded_model = None
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
 application = None  # Will hold the Telegram application instance
 
 # Open the database
 conn = sqlite3.connect(global_dataset_name)
 cursor = conn.cursor()
 
-async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAULT_TYPE, get_hf:bool):
+from langchain_community.llms import Tongyi
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    trim_messages,
+)
+history = []
+start_chat = False
+llm = Tongyi()
+
+async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAULT_TYPE):
     results = get_arxiv_results(keywords.replace(",", " OR "), MAX_RESULTS)
-    if get_hf:
+    if GET_HF:
         hf_results = get_hf_results(keywords.replace(",", " OR "), MAX_RESULTS)
         # 去重
         exist_dict = {}
@@ -125,14 +140,14 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
     # Sort papers_to_send by overall_rating in descending order
     papers_to_send.sort(key=lambda x: x[0], reverse=True)
     # Select the top 10 papers
-    N = 10 if not get_hf else 20
+    N = 10 if not GET_HF else 20
     papers_to_send = papers_to_send[:N]
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text='-'*20)
         cur_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=cur_time)
     except Exception as e:
-        print(e)
+        logger.info(e)
 
     for mes_idx, (overall_rating, message, entry_id) in enumerate(papers_to_send):
         # Provide 5 level of rating for the paper.
@@ -148,7 +163,7 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown", reply_markup=reply_markup)
         except Exception as e:
-            print(e)
+            logger.info(e)
 
 async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -158,7 +173,7 @@ async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     feedback_type, entry_id = feedback_data.split('_', 1)
 
     # Collect feedback (here we just log it)
-    logging.info(f"Received feedback: {feedback_type} for paper {entry_id} from user {update.effective_user.id}")
+    logger.info(f"Received feedback: {feedback_type} for paper {entry_id} from user {update.effective_user.id}")
 
     await query.edit_message_reply_markup(reply_markup=None)
     # await query.message.reply_text(f"Thank you for your feedback: {feedback_type}")
@@ -201,11 +216,36 @@ async def retrieve_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(f"For tag {tag}, the papers are the following: \n\n{'\n\n'.join(papers)}", parse_mode="Markdown")
 
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global history, start_chat
+    start_chat = True
+    history = []
+    await update.message.reply_text("你好, 我是AI机器人, 随时来和我聊天，结束聊天请输入/end~")
+
+async def end_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global start_chat
+    start_chat = False
+    await update.message.reply_text("你好, 本次聊天结束")
+
+async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global history, start_chat
+    if not start_chat:
+        return
+    query = update.message.text.strip()
+    history.append(HumanMessage(query))
+    history = trim_messages(history, token_counter=len, max_tokens=4, start_on="human")
+    logger.info('now chat with llm')
+    logger.info(history)
+    reply = llm.invoke(history)
+    history.append(AIMessage(content=reply))
+    await update.message.reply_text(f"{reply}", parse_mode="Markdown")
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--first_backcheck_day', type=int, default=None)
     parser.add_argument("--keywords", type=str, default="reasoning,planning,preference,optimization,symbolic,grokking")
-    parser.add_argument("--get_hf", action='store_false')
+    parser.add_argument("--create_log", action='store_true', help='create a log')
+    parser.add_argument("--empty_log", action='store_false', help='delete current log dir')
 
     args = parser.parse_args()
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -213,14 +253,41 @@ def main():
     application.add_handler(CallbackQueryHandler(feedback_handler))
     application.add_handler(CommandHandler("get", retrieve_handler))
     application.add_handler(CallbackQueryHandler(retrieve_handler, pattern="^get"))
-    run_once_fetch_func = lambda context: fetch_and_send_papers(args.keywords, args.first_backcheck_day, context, args.get_hf)
-    run_daily_fetch_func = lambda context: fetch_and_send_papers(args.keywords, 2, context, args.get_hf)
+    application.add_handler(CommandHandler("start", start_handler))
+    application.add_handler(CommandHandler("end", end_handler))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), chat_handler))
+    run_once_fetch_func = lambda context: fetch_and_send_papers(args.keywords, args.first_backcheck_day, context)
+    run_daily_fetch_func = lambda context: fetch_and_send_papers(args.keywords, 2, context)
 
     if args.first_backcheck_day is not None:
         application.job_queue.run_once(run_once_fetch_func, when=timedelta(seconds=1))
-    # application.job_queue.run_daily(run_daily_fetch_func, time(hour=0, minute=30)) 
+    application.job_queue.run_daily(run_daily_fetch_func, time(hour=0, minute=30)) 
+
+    # 记录训练开始的时间，方便后期收集数据的时候采集从此时开始的数据
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)  # 控制台只要INFO以上
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    if args.create_log:
+        cur_dir = os.path.dirname(os.path.abspath(__file__))
+        log_dir = os.path.join(cur_dir, 'logs')
+        if args.empty_log:
+            logger.info(f'delete:{log_dir}')
+            try:
+                shutil.rmtree(log_dir)
+            except Exception as e:
+                pass
+        Path(log_dir).mkdir(exist_ok=True, parents=True)
+        date_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        log_path = os.path.join(log_dir, f"log_{date_time}.log")
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setLevel(logging.INFO)    # 文件全部收录
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
 
     # Run the bot
+    logger.info('start running')
     application.run_polling()
 
 if __name__ == '__main__':

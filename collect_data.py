@@ -3,7 +3,9 @@ import sqlite3
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 import asyncio
+import argparse
 import os
+from datetime import datetime, UTC
 
 from common import *
 # Logging with timestamps
@@ -27,7 +29,7 @@ target_chat = os.environ["TELEGRAM_BOT_CHAT_NAME"]
 # Number of messages to retrieve
 limit = 100000  
 
-async def main():
+async def main(args):
     # Initialize the client
     client = TelegramClient(session_name, api_id, api_hash)
 
@@ -82,12 +84,40 @@ async def main():
 
     logger.info("Iterating over the chat history to save most recent messages")
 
+    # 寻找记录开始时间
+    start_time = None
+    pattern = re.compile("log_(.*)\.log")
+    if not os.path.exists(args.start_time):
+        try:
+            dt = datetime.fromisoformat(args.start_time).astimezone(UTC)
+            start_time = dt
+        except Exception as e:
+            pass
+    elif os.path.isdir(args.start_time):
+        min_start_time = datetime.now().astimezone(UTC)
+        sub_flag = 0
+        for cur_file in os.listdir(args.start_time):
+            cur_result = re.findall(pattern, cur_file)
+            if len(cur_result) > 0:
+                dt = datetime.fromisoformat(cur_result[0]).astimezone(UTC)
+                if dt < min_start_time:
+                    sub_flag = 1
+                    min_start_time = dt
+        if sub_flag:
+            start_time = dt
+    else:
+        cur_result = re.findall(pattern, args.start_time)
+        if len(cur_result) > 0:
+            dt = datetime.fromisoformat(cur_result[0]).astimezone(UTC)
+            start_time = dt
+
     # Iterate over the chat history from the most recent message of the chat
     async for message in client.iter_messages(entity, limit=limit, reverse=False):
         # Check whether the message has been processed, if so, break the loop since we iterate over the messages from most recent one
         if message.id in processed_message_ids:
             break
-
+        if start_time is not None and message.date < start_time:
+            continue
         # collect the paper information
         if message.reply_to_msg_id:
             # Get parent message
@@ -138,4 +168,7 @@ async def main():
 
 if __name__ == '__main__':
     # Ensure the event loop is properly handled
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--start_time', type=str, default='', help='provide collect timestamp: 2025-07-12T12:38:18')
+    args = parser.parse_args()
+    asyncio.run(main(args))
