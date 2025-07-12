@@ -1,6 +1,13 @@
+# python 3.12.1
 arxiv==2.0.0
 python-telegram-bot[job-queue]==20.2
 scikit-learn
 pandas
 torch
 telethon
+langchain_core
+langchain_community
+faiss-cpu
+sentence-transformers
+easydict
+dashscope
