@@ -261,7 +261,7 @@ def main():
 
     if args.first_backcheck_day is not None:
         application.job_queue.run_once(run_once_fetch_func, when=timedelta(seconds=1))
-    application.job_queue.run_daily(run_daily_fetch_func, time(hour=0, minute=30)) 
+    application.job_queue.run_daily(run_daily_fetch_func, time(hour=0, minute=30))
 
     # 记录训练开始的时间，方便后期收集数据的时候采集从此时开始的数据
     console_handler = logging.StreamHandler()
