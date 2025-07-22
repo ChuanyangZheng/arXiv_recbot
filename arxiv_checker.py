@@ -140,7 +140,7 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
     # Sort papers_to_send by overall_rating in descending order
     papers_to_send.sort(key=lambda x: x[0], reverse=True)
     # Select the top 10 papers
-    N = 10 if not GET_HF else 20
+    N = 10 if not GET_HF else 10
     papers_to_send = papers_to_send[:N]
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text='-'*20)
