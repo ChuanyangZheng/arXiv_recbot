@@ -92,7 +92,7 @@ class PaperManager:
         except Exception as e:
             print(f"Unexpected error: {e}")
             return False
-
+    
     def select_papers(self):
         paper_list = []
         for result in self.papers:
