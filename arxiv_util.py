@@ -38,10 +38,11 @@ def get_arxiv_message(result):
         title = getattr(result, 'title', 'No title available')
         entry_id = getattr(result, 'entry_id', 'No URL available')
         upvote = getattr(result, 'upvotes', 'None')
-        
+        source = getattr(result, 'source', 'arXiv')
+
         message = (
             f"**Upvote:** {upvote}\n"
-            f"**Source:** arXiv\n"
+            f"**Source:** {source}\n"
             f"**Title:** {title}\n"
             f"**Authors:** {authors}\n"
             f"**Summary:** {summary}\n"

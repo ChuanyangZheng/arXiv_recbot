@@ -80,10 +80,9 @@ class PaperManager:
             # Debug: Print keys of the first paper
             print("Keys in the first paper:", data[0].keys())
 
-            self.raw_papers = data  # Store raw data
-
-            self.sort_papers()
+            self.papers = data  # Store raw data
             self.select_papers()
+            self.sort_papers()
             self.total_pages = max((len(self.papers) + self.papers_per_page - 1) // self.papers_per_page, 1)
             self.current_page = 1
             return True
@@ -116,25 +115,26 @@ class PaperManager:
     def sort_papers(self):
         if self.sort_method == "hot":
             self.papers = sorted(
-                self.raw_papers,
+                self.papers,
                 key=lambda x: self.calculate_score(x),
                 reverse=True
             )
         elif self.sort_method == "new":
             self.papers = sorted(
-                self.raw_papers,
-                key=lambda x: x.get('publishedAt', ''),
+                self.papers,
+                # key=lambda x: x.get('publishedAt', ''),
+                key=lambda x: x['paper'].get('submittedOnDailyAt', ''),
                 reverse=True
             )
         elif self.sort_method == "rising":
             self.papers = sorted(
-                self.raw_papers,
+                self.papers,
                 key=lambda x: self.calculate_rising_score(x),
                 reverse=True
             )
         else:
             self.papers = sorted(
-                self.raw_papers,
+                self.papers,
                 key=lambda x: self.calculate_score(x),
                 reverse=True
             )
@@ -208,9 +208,11 @@ class PaperManager:
 paper_manager = PaperManager()
 
 
-def get_hf_results(query: str, max_results: int):
+def get_hf_results(query: str, max_results: int, backdays: int):
     paper_manager.papers_per_page = max_results
     paper_manager.query = query
+    if backdays <= 3:
+        paper_manager.sort_method = 'new'
     fetch = paper_manager.fetch_papers()
     return paper_manager.papers
 

@@ -68,7 +68,7 @@ llm = Tongyi()
 async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAULT_TYPE):
     results = get_arxiv_results(keywords.replace(",", " OR "), MAX_RESULTS)
     if GET_HF:
-        hf_results = get_hf_results(keywords.replace(",", " OR "), MAX_RESULTS)
+        hf_results = get_hf_results(keywords.replace(",", " OR "), MAX_RESULTS, backdays)
         # 去重
         exist_dict = {}
         for idx, result in enumerate(results):
@@ -80,6 +80,7 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
             if cur_title_key in exist_dict.keys():
                 exist_idx = exist_dict[cur_title_key]
                 results[exist_idx].upvotes = result['paper']['upvotes']
+                results[exist_idx].source = "arXiv,Daily Papers"
             else:
                 new_hf_results.append(result)
         # 交替合并两个list
@@ -100,7 +101,8 @@ async def fetch_and_send_papers(keywords, backdays, context: ContextTypes.DEFAUL
         if type(result) is dict:  # hf result
             result['entry_id'] = f"http://arxiv.org/abs/{result['paper']['id']}"
             result = EasyDict(result)
-            iso_time = result['publishedAt']
+            # iso_time = result['publishedAt']
+            iso_time = result['paper'].get('submittedOnDailyAt', '')
             submitted_date = datetime.fromisoformat(iso_time.replace('Z', '+00:00'))
             message = get_hf_message(result)
         else:
